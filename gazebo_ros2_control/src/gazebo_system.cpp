@@ -52,9 +52,6 @@ public:
   /// \brief vector with the PID state publisher for each joint, used if joint is PID-controlled
   std::vector<std::shared_ptr<realtime_tools::RealtimePublisher<PidState>>> pid_publishers_;
 
-  /// \brief Gazebo controller for joints, used if controlling by position or velocity
-  std::unique_ptr<gazebo::physics::JointController> joint_controller_;
-
   /// \brief handles to the joints from within Gazebo
   std::vector<gazebo::physics::JointPtr> sim_joints_;
 
@@ -120,8 +117,6 @@ bool GazeboSystem::initSim(
   this->dataPtr->joint_control_methods_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_pids_.resize(this->dataPtr->n_dof_);
   this->dataPtr->pid_publishers_.resize(this->dataPtr->n_dof_);
-  this->dataPtr->joint_controller_ =
-    std::make_unique<gazebo::physics::JointController>(parent_model);
   this->dataPtr->joint_position_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_velocity_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_effort_.resize(this->dataPtr->n_dof_);
@@ -187,21 +182,14 @@ bool GazeboSystem::initSim(
         this->dataPtr->joint_pids_[j].Init(
           pid_state.p_term, pid_state.i_term,
           pid_state.d_term, pid_state.i_max, pid_state.i_min);
-        this->dataPtr->joint_controller_->AddJoint(this->dataPtr->sim_joints_[j]);
       }
       if (hardware_info.joints[j].command_interfaces[i].name == "position") {
         this->dataPtr->joint_control_methods_[j] |= POSITION;
-        this->dataPtr->joint_controller_->SetPositionPID(
-          this->dataPtr->sim_joints_[j]->GetScopedName(),
-          this->dataPtr->joint_pids_[j]);
         this->dataPtr->joint_pos_cmd_[j] = std::make_shared<hardware_interface::CommandInterface>(
           joint_name, hardware_interface::HW_IF_POSITION, &this->dataPtr->joint_position_cmd_[j]);
       }
       if (hardware_info.joints[j].command_interfaces[i].name == "velocity") {
         this->dataPtr->joint_control_methods_[j] |= VELOCITY;
-        this->dataPtr->joint_controller_->SetVelocityPID(
-          this->dataPtr->sim_joints_[j]->GetScopedName(),
-          this->dataPtr->joint_pids_[j]);
         this->dataPtr->joint_vel_cmd_[j] = std::make_shared<hardware_interface::CommandInterface>(
           joint_name, hardware_interface::HW_IF_VELOCITY, &this->dataPtr->joint_velocity_cmd_[j]);
       }
@@ -296,48 +284,33 @@ rcl_interfaces::msg::SetParametersResult GazeboSystemPrivate::update_parameters(
       for (unsigned int j = 0; j < this->n_dof_; j++) {
         if (this->sim_joints_[j]->GetName().compare(joint_name) == 0) {
           auto scoped_name = this->sim_joints_[j]->GetScopedName();
-          auto c_type = parse_coefficient(coefficient_name);
-          if (c_type != PIDCoefficient::None) {
-            double c_value = param.as_double();
-            if (this->joint_control_methods_[j] & GazeboSystemInterface::POSITION) {
-              auto pids = this->joint_controller_->GetPositionPIDs();
-              if (c_type == PIDCoefficient::Kp) {
-                pids[scoped_name].SetPGain(c_value);
+          auto coeff_type = parse_coefficient(coefficient_name);
+          if (coeff_type != PIDCoefficient::None) {
+            double coeff_value = param.as_double();
+            if (this->joint_control_methods_[j] & GazeboSystemInterface::POSITION ||
+              this->joint_control_methods_[j] & GazeboSystemInterface::VELOCITY)
+            {
+              auto & pid = this->joint_pids_[j];
+              if (coeff_type == PIDCoefficient::Kp) {
+                pid.SetPGain(coeff_value);
+              } else if (coeff_type == PIDCoefficient::Ki) {
+                pid.SetIGain(coeff_value);
+              } else if (coeff_type == PIDCoefficient::Kd) {
+                pid.SetDGain(coeff_value);
+              } else if (coeff_type == PIDCoefficient::Imin) {
+                pid.SetIMin(coeff_value);
+              } else if (coeff_type == PIDCoefficient::Imax) {
+                pid.SetIMax(coeff_value);
               }
-              if (c_type == PIDCoefficient::Ki) {
-                pids[scoped_name].SetIGain(c_value);
-              }
-              if (c_type == PIDCoefficient::Kd) {
-                pids[scoped_name].SetDGain(c_value);
-              }
-              if (c_type == PIDCoefficient::Imin) {
-                pids[scoped_name].SetIMin(c_value);
-              }
-              if (c_type == PIDCoefficient::Imax) {
-                pids[scoped_name].SetIMax(c_value);
-              }
-              this->joint_controller_->SetPositionPID(scoped_name, pids[scoped_name]);
+              pid_publishers_[j]->lock();
+              auto & pid_state = pid_publishers_[j]->msg_;
+              pid_state.p_term = pid.GetPGain();
+              pid_state.i_term = pid.GetIGain();
+              pid_state.d_term = pid.GetDGain();
+              pid_state.i_min = pid.GetIMin();
+              pid_state.i_max = pid.GetIMax();
+              pid_publishers_[j]->unlock();
             }
-            if (this->joint_control_methods_[j] & GazeboSystemInterface::VELOCITY) {
-              auto pids = this->joint_controller_->GetVelocityPIDs();
-              if (c_type == PIDCoefficient::Kp) {
-                pids[scoped_name].SetPGain(c_value);
-              }
-              if (c_type == PIDCoefficient::Ki) {
-                pids[scoped_name].SetIGain(c_value);
-              }
-              if (c_type == PIDCoefficient::Kd) {
-                pids[scoped_name].SetDGain(c_value);
-              }
-              if (c_type == PIDCoefficient::Imin) {
-                pids[scoped_name].SetIMin(c_value);
-              }
-              if (c_type == PIDCoefficient::Imax) {
-                pids[scoped_name].SetIMax(c_value);
-              }
-              this->joint_controller_->SetVelocityPID(scoped_name, pids[scoped_name]);
-            }
-            std::cout << "Setting " << param_name << " to " << c_value << std::endl;
           }
         }
       }
@@ -432,53 +405,39 @@ hardware_interface::return_type GazeboSystem::write()
   gazebo::common::Time gz_time_now = this->dataPtr->parent_model_->GetWorld()->SimTime();
   rclcpp::Time sim_time_ros(gz_time_now.sec, gz_time_now.nsec);
   rclcpp::Duration sim_period = sim_time_ros - this->dataPtr->last_update_sim_time_ros_;
+  builtin_interfaces::msg::Duration dt = sim_period;
+  gazebo::common::Time gz_sim_period((int32_t)dt.sec, (int32_t)dt.nanosec);
 
   for (unsigned int j = 0; j < this->dataPtr->joint_names_.size(); j++) {
-    if (this->dataPtr->joint_control_methods_[j] & POSITION) {
-      this->dataPtr->joint_controller_->SetPositionTarget(
-        this->dataPtr->sim_joints_[j]->GetScopedName(),
-        this->dataPtr->joint_position_cmd_[j]);
+    auto method = this->dataPtr->joint_control_methods_[j];
+    double error = 0.0;
+    if (method & POSITION) {
+      error = this->dataPtr->joint_position_[j] - this->dataPtr->joint_position_cmd_[j];
     }
-    if (this->dataPtr->joint_control_methods_[j] & VELOCITY) {
-      this->dataPtr->joint_controller_->SetVelocityTarget(
-        this->dataPtr->sim_joints_[j]->GetScopedName(),
-        this->dataPtr->joint_velocity_cmd_[j]);
+    if (method & VELOCITY) {
+      error = this->dataPtr->joint_velocity_[j] - this->dataPtr->joint_velocity_cmd_[j];
     }
-    if (this->dataPtr->joint_control_methods_[j] & EFFORT) {
+    if ((method & POSITION) || (method & VELOCITY)) {
+      auto & pid = this->dataPtr->joint_pids_[j];
+      double cmd = pid.Update(error, gz_sim_period);
+      this->dataPtr->sim_joints_[j]->SetForce(0, cmd);
+      auto & publisher = this->dataPtr->pid_publishers_[j];
+      if (publisher->trylock()) {
+        publisher->msg_.timestep = sim_period;
+        pid.GetErrors(publisher->msg_.p_error, publisher->msg_.i_error, publisher->msg_.d_error);
+        publisher->msg_.error = error;
+        publisher->msg_.output = cmd;
+        publisher->msg_.header.stamp = sim_time_ros;
+        publisher->unlockAndPublish();
+      }
+    }
+    if (method & EFFORT) {
       const double effort =
         this->dataPtr->joint_effort_cmd_[j];
       this->dataPtr->sim_joints_[j]->SetForce(0, effort);
     }
   }
-  this->dataPtr->joint_controller_->Update();
   this->dataPtr->last_update_sim_time_ros_ = sim_time_ros;
-
-  auto position_pids = this->dataPtr->joint_controller_->GetPositionPIDs();
-  auto velocity_pids = this->dataPtr->joint_controller_->GetVelocityPIDs();
-
-  for (unsigned int j = 0; j < this->dataPtr->joint_names_.size(); j++) {
-    auto method = this->dataPtr->joint_control_methods_[j];
-    if ((method & POSITION) || (method & VELOCITY)) {
-      auto joint_name = this->dataPtr->joint_names_[j];
-      gazebo::common::PID pid;
-      if (method & POSITION) {
-        pid = position_pids[joint_name];
-      } else {
-        pid = velocity_pids[joint_name];
-      }
-      auto & publisher = this->dataPtr->pid_publishers_[j];
-      if (publisher->trylock()) {
-        publisher->msg_.timestep = sim_period;
-        pid.GetErrors(publisher->msg_.p_error, publisher->msg_.i_error, publisher->msg_.d_error);
-        publisher->msg_.error = publisher->msg_.p_error + publisher->msg_.i_error +
-          publisher->msg_.d_error;
-        publisher->msg_.output = pid.GetCmd();
-        publisher->msg_.header.stamp = sim_time_ros;
-        publisher->unlockAndPublish();
-      }
-    }
-  }
-
   return hardware_interface::return_type::OK;
 }
 }  // namespace gazebo_ros2_control
