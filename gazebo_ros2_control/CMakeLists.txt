@@ -37,6 +37,7 @@ ament_target_dependencies(${PROJECT_NAME}
   hardware_interface
   pluginlib
   rclcpp
+  control_msgs
   urdf
   yaml_cpp_vendor
 )

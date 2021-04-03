@@ -26,6 +26,8 @@
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>realtime_tools</depend>
   <depend>urdf</depend>
   <depend>yaml_cpp_vendor</depend>
 

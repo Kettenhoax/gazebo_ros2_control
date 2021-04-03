@@ -16,7 +16,11 @@
 #include <string>
 #include <vector>
 
+#include <control_msgs/msg/pid_state.hpp>
+#include <realtime_tools/realtime_publisher.h>
 #include "gazebo_ros2_control/gazebo_system.hpp"
+
+using control_msgs::msg::PidState;
 
 class gazebo_ros2_control::GazeboSystemPrivate
 {
@@ -41,6 +45,12 @@ public:
 
   /// \brief vector with the PID controller for each joint, used if controlling by position or velocity
   std::vector<gazebo::common::PID> joint_pids_;
+
+  /// \brief vector with current PID states, used if joint is PID-controlled
+  std::vector<PidState> pid_states_;
+
+  /// \brief vector with the PID state publisher for each joint, used if joint is PID-controlled
+  std::vector<std::shared_ptr<realtime_tools::RealtimePublisher<PidState>>> pid_publishers_;
 
   /// \brief Gazebo controller for joints, used if controlling by position or velocity
   std::unique_ptr<gazebo::physics::JointController> joint_controller_;
@@ -109,6 +119,7 @@ bool GazeboSystem::initSim(
   this->dataPtr->joint_names_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_control_methods_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_pids_.resize(this->dataPtr->n_dof_);
+  this->dataPtr->pid_publishers_.resize(this->dataPtr->n_dof_);
   this->dataPtr->joint_controller_ =
     std::make_unique<gazebo::physics::JointController>(parent_model);
   this->dataPtr->joint_position_.resize(this->dataPtr->n_dof_);
@@ -151,30 +162,35 @@ bool GazeboSystem::initSim(
 
     // Accept this joint and continue configuration
     RCLCPP_INFO_STREAM(this->nh_->get_logger(), "Loading joint: " << joint_name);
-
     RCLCPP_INFO_STREAM(this->nh_->get_logger(), "\tCommand:");
 
     // register the command handles
     for (unsigned int i = 0; i < hardware_info.joints[j].command_interfaces.size(); i++) {
+      if (hardware_info.joints[j].command_interfaces[i].name == "position" ||
+        hardware_info.joints[j].command_interfaces[i].name == "velocity")
+      {
+        auto publisher = this->nh_->create_publisher<PidState>(
+          joint_name + "/pid", rclcpp::SystemDefaultsQoS());
+        this->dataPtr->pid_publishers_[j] =
+          std::make_shared<realtime_tools::RealtimePublisher<PidState>>(
+          publisher);
+        auto & pid_state = this->dataPtr->pid_publishers_[j]->msg_;
+        pid_state.p_term = this->nh_->declare_parameter(joint_name + ".kp", 1.0);
+        pid_state.i_term = this->nh_->declare_parameter(joint_name + ".ki", 0.0);
+        pid_state.d_term = this->nh_->declare_parameter(joint_name + ".kd", 0.0);
+        pid_state.i_min = this->nh_->declare_parameter(joint_name + ".i_min", -1.0);
+        pid_state.i_max = this->nh_->declare_parameter(joint_name + ".i_max", 1.0);
+        RCLCPP_INFO(
+          this->nh_->get_logger(), "\t\t PID %.2f %.2f %.2f [%.2f, %.2f]", pid_state.p_term,
+          pid_state.i_term, pid_state.d_term, pid_state.i_min,
+          pid_state.i_max);
+        this->dataPtr->joint_pids_[j].Init(
+          pid_state.p_term, pid_state.i_term,
+          pid_state.d_term, pid_state.i_max, pid_state.i_min);
+        this->dataPtr->joint_controller_->AddJoint(this->dataPtr->sim_joints_[j]);
+      }
       if (hardware_info.joints[j].command_interfaces[i].name == "position") {
         this->dataPtr->joint_control_methods_[j] |= POSITION;
-
-        auto kp = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".kp", 1.0);
-        auto ki = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".ki", 0.0);
-        auto kd = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".kd", 0.0);
-        auto i_min = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".i_min", -1.0);
-        auto i_max = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".i_max", 1.0);
-        RCLCPP_INFO(
-          this->nh_->get_logger(), "\t\t position %.2f %.2f %.2f [%.2f-%.2f]", kp, ki, kd, i_min,
-          i_max);
-
-        this->dataPtr->joint_pids_[j].Init(kp, ki, kd, i_max, i_min);
-        this->dataPtr->joint_controller_->AddJoint(this->dataPtr->sim_joints_[j]);
         this->dataPtr->joint_controller_->SetPositionPID(
           this->dataPtr->sim_joints_[j]->GetScopedName(),
           this->dataPtr->joint_pids_[j]);
@@ -183,23 +199,6 @@ bool GazeboSystem::initSim(
       }
       if (hardware_info.joints[j].command_interfaces[i].name == "velocity") {
         this->dataPtr->joint_control_methods_[j] |= VELOCITY;
-
-        auto kp = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".kp", 1.0);
-        auto ki = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".ki", 0.0);
-        auto kd = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".kd", 0.0);
-        auto i_min = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".i_min", -1.0);
-        auto i_max = this->nh_->declare_parameter(
-          this->dataPtr->sim_joints_[j]->GetName() + ".i_max", 1.0);
-        RCLCPP_INFO(
-          this->nh_->get_logger(), "\t\t velocity %.2f %.2f %.2f [%.2f-%.2f]", kp, ki, kd, i_min,
-          i_max);
-
-        this->dataPtr->joint_pids_[j].Init(kp, ki, kd, i_max, i_min);
-        this->dataPtr->joint_controller_->AddJoint(this->dataPtr->sim_joints_[j]);
         this->dataPtr->joint_controller_->SetVelocityPID(
           this->dataPtr->sim_joints_[j]->GetScopedName(),
           this->dataPtr->joint_pids_[j]);
@@ -453,6 +452,32 @@ hardware_interface::return_type GazeboSystem::write()
   }
   this->dataPtr->joint_controller_->Update();
   this->dataPtr->last_update_sim_time_ros_ = sim_time_ros;
+
+  auto position_pids = this->dataPtr->joint_controller_->GetPositionPIDs();
+  auto velocity_pids = this->dataPtr->joint_controller_->GetVelocityPIDs();
+
+  for (unsigned int j = 0; j < this->dataPtr->joint_names_.size(); j++) {
+    auto method = this->dataPtr->joint_control_methods_[j];
+    if ((method & POSITION) || (method & VELOCITY)) {
+      auto joint_name = this->dataPtr->joint_names_[j];
+      gazebo::common::PID pid;
+      if (method & POSITION) {
+        pid = position_pids[joint_name];
+      } else {
+        pid = velocity_pids[joint_name];
+      }
+      auto & publisher = this->dataPtr->pid_publishers_[j];
+      if (publisher->trylock()) {
+        publisher->msg_.timestep = sim_period;
+        pid.GetErrors(publisher->msg_.p_error, publisher->msg_.i_error, publisher->msg_.d_error);
+        publisher->msg_.error = publisher->msg_.p_error + publisher->msg_.i_error +
+          publisher->msg_.d_error;
+        publisher->msg_.output = pid.GetCmd();
+        publisher->msg_.header.stamp = sim_time_ros;
+        publisher->unlockAndPublish();
+      }
+    }
+  }
 
   return hardware_interface::return_type::OK;
 }
