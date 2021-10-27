@@ -301,7 +301,10 @@ void GazeboRosControlPlugin::Load(gazebo::physics::ModelPtr parent, sdf::Element
         impl_->model_nh_->get_logger(), "Could not initialize robot simulation interface");
       return;
     }
-
+    gazeboSystem->set_state(
+      rclcpp_lifecycle::State(
+        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+        hardware_interface::lifecycle_state_names::INACTIVE));
     resource_manager_->import_component(std::move(gazeboSystem));
   }
 
