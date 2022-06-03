@@ -304,6 +304,7 @@ void GazeboRosControlPlugin::Load(gazebo::physics::ModelPtr parent, sdf::Element
     resource_manager_->import_component(std::move(gazeboSystem), control_hardware[i]);
   }
 
+  resource_manager_->activate_all_components();
   impl_->executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
 
   // Create the controller manager
